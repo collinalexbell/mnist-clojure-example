@@ -1,12 +1,23 @@
 (ns mnist-clojure.core
-  (:require [taoensso.timbre :as logger])
   (:import
    [org.deeplearning4j.datasets DataSets]
    org.deeplearning4j.datasets.iterator.impl.MnistDataSetIterator
    org.deeplearning4j.nn.conf.NeuralNetConfiguration$Builder
    org.deeplearning4j.nn.api.OptimizationAlgorithm
    org.deeplearning4j.nn.conf.Updater
-   ))
+   org.deeplearning4j.nn.conf.layers.DenseLayer$Builder
+   org.deeplearning4j.nn.weights.WeightInit
+   org.deeplearning4j.nn.conf.layers.OutputLayer$Builder
+   org.nd4j.linalg.lossfunctions.LossFunctions$LossFunction
+   org.deeplearning4j.nn.multilayer.MultiLayerNetwork
+   org.deeplearning4j.optimize.listeners.ScoreIterationListener
+   org.deeplearning4j.ui.api.UIServer
+   org.deeplearning4j.ui.storage.InMemoryStatsStorage
+   org.deeplearning4j.ui.stats.StatsListener
+   org.deeplearning4j.api.storage.listener.RoutingIterationListener
+   org.deeplearning4j.optimize.api.TrainingListener
+   org.deeplearning4j.eval.Evaluation))
+
 
 ;(def train-data (DataSets/mnist))
 
@@ -21,7 +32,6 @@
 (def test-iter (MnistDataSetIterator. batchSize true rndSeed))
 
 
-(logger/info "Build model...")
 
 ;set up the config
 (def conf
@@ -30,29 +40,50 @@
       (.optimizationAlgo (OptimizationAlgorithm/STOCHASTIC_GRADIENT_DESCENT))
       (.iterations 1)
       (.learningRate 0.006)
-      (-> (.updater Updater/NESTEROVS))))
+      (-> (.updater Updater/NESTEROVS) (.momentum 0.9))
+      (-> (.regularization true) (.l2 1e-4))
+      (.list)
+      (.layer 0 (-> (DenseLayer$Builder.)
+                    (.nIn (* numRows numColumns))
+                    (.nOut 1000)
+                    (.activation "relu")
+                    (.weightInit WeightInit/XAVIER)
+                    (.build)))
+      (.layer 1 (-> (OutputLayer$Builder. (LossFunctions$LossFunction/NEGATIVELOGLIKELIHOOD))
+                    (.nIn 1000)
+                    (.nOut outputNum)
+                    (.activation "softmax")
+                    (.weightInit WeightInit/XAVIER)
+                    (.build)))
+      (.pretrain false)
+      (.backprop true)
+      (.build)))
+
+(def model
+  (MultiLayerNetwork. conf))
+
+(.init model)
+
+(.getListeners model)
 
 
- .seed(rngSeed) //include a random seed for reproducibility
-                // use stochastic gradient descent as an optimization algorithm
-                .optimizationAlgo(OptimizationAlgorithm.STOCHASTIC_GRADIENT_DESCENT)
-                .iterations(1)
-                .learningRate(0.006) //specify the learning rate
-                .updater(Updater.NESTEROVS).momentum(0.9) //specify the rate of change of the learning rate.
-                .regularization(true).l2(1e-4)
-                .list()
-                .layer(0, new DenseLayer.Builder() //create the first, input layer with xavier initialization
-                        .nIn(numRows * numColumns)
-                        .nOut(1000)
-                        .activation("relu")
-                        .weightInit(WeightInit.XAVIER)
-                        .build())
-                .layer(1, new OutputLayer.Builder(LossFunction.NEGATIVELOGLIKELIHOOD) //create hidden layer
-                        .nIn(1000)
-                        .nOut(outputNum)
-                        .activation("softmax")
-                        .weightInit(WeightInit.XAVIER)
-                        .build())
-                .pretrain(false).backprop(true) //use backpropagation to adjust weights
-                .build();
+(def uiserver (UIServer/getInstance))
 
+(def stats-storage  (InMemoryStatsStorage.))
+
+(.setListeners model [(StatsListener. stats-storage)])
+
+(.attach uiserver stats-storage)
+
+(supers StatsListener)
+
+(for [x (range 15)]
+  (.fit model train-iter))
+
+
+(def eval (Evaluation. outputNum))
+
+(while (.hasNext test-iter)
+  (let [next (.next test-iter)
+        output (.output model (.getFeatureMatrix next))]
+      (.eval eval (.getLabels next) output)))
